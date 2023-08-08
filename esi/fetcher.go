@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
@@ -207,7 +208,7 @@ func (p *PriceFetcher) FetchPriceData(client *pester.Client, baseURL string) (ma
 		AveragePrice  float64 `json:"average_price"`
 		AdjustedPrice float64 `json:"adjusted_price"`
 	}, 0)
-	err := fetchURL(p.ctx, client, url, &esiPrices)
+	_, err := fetchURL(p.ctx, client, url, &esiPrices)
 	if err != nil {
 		return nil, err
 	}
@@ -245,13 +246,15 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 	fetchStart := time.Now()
 
 	l := &sync.Mutex{}
-	requestAndProcess := func(url string) (bool, error) {
+	requestAndProcess := func(url string, page int) (bool, error) {
 		var orders []MarketOrder
-		err := fetchURL(p.ctx, client, url, &orders)
+
+		headers, err := fetchURL(p.ctx, client, url, &orders)
 		if err != nil {
 			return false, err
 		}
 
+		pages := headers.Get("X-Pages")
 		if len(orders) == 0 {
 			return false, nil
 		}
@@ -261,7 +264,12 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 			allOrdersByType[order.Type] = append(allOrdersByType[order.Type], order)
 		}
 		l.Unlock()
-		return true, nil
+
+		if val, _ := strconv.Atoi(pages); val > page {
+			return true, nil
+		}
+
+		return false, nil
 	}
 
 	wg := &sync.WaitGroup{}
@@ -278,7 +286,7 @@ func (p *PriceFetcher) FetchOrderData(client *pester.Client, baseURL string, reg
 				}
 
 				url := fmt.Sprintf("%s/markets/%d/orders/?datasource=tranquility&order_type=all&page=%d", baseURL, regionID, page)
-				hasMore, err := requestAndProcess(url)
+				hasMore, err := requestAndProcess(url, page)
 				if err != nil {
 					errChannel <- fmt.Errorf("Failed to fetch market orders: %s (%s)", err, url)
 					return
